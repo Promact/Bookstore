@@ -35,7 +35,7 @@ services:
       migrator:
         condition: service_completed_successfully      
     ports:
-      - "5001:443"
+      - "5001:80"
     healthcheck:
       test: ["CMD", "curl", "-k -v", "https://localhost/swagger/index.html"]
       interval: 10s
@@ -58,7 +58,7 @@ services:
       app:
         condition: service_started
     ports:
-      - "5002:443"  
+      - "5002:80"  
 
   auth:    
     build: 
@@ -76,7 +76,7 @@ services:
       app:
         condition: service_started               
     ports:
-      - "5003:443" 
+      - "5003:80" 
 
   migrator:
     build:
