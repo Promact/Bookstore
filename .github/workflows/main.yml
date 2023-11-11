@@ -1,0 +1,91 @@
+name: Terraform Provision
+'on':
+  push:
+    branches:
+      - main
+      - port-changes
+jobs:
+  Bookstore-App:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: 6.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Install ABP CLI
+        run: dotnet tool install -g Volo.Abp.Cli
+        
+      - name: Install client-side libraries
+        run: abp install-libs
+
+      - name: Build
+        run: dotnet build --no-restore
+
+      - name: Test
+        run: dotnet test --no-build --verbosity normal
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3.0.0
+        with: 
+          terraform_version: 1.6.3
+
+      - name: Configure AWS credentials
+        run: >
+          echo "AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}" >>
+          $GITHUB_ENV
+
+          echo "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}" >>
+          $GITHUB_ENV
+
+      - name: Initialize Terraform
+        run: |
+         cd infrastructure/ecr
+         terraform init
+         terraform apply -auto-approve
+        
+      - name : Get ECR Repository URL
+        id : ecr-repo
+        run : |
+          cd infrastructure/ecr
+          ecr_repo_url=$(terraform output -raw ecr_repository_url)
+          echo "ECR_REPO_URL=$ecr_repo_url" >> $GITHUB_ENV
+          echo "The ECR repository URL is ${{ env.ECR_REPO_URL }}"
+
+      - name: Print Repository Name and Images
+        run: |
+          REPO_NAME=$(echo "${{ github.repository }}" | awk -F/ '{print $2}' | tr '[:upper:]' '[:lower:]')
+          echo "Repository Name: $REPO_NAME"
+
+      - name: Build and Push Docker Image
+        run: |
+          ecr_repo_url=${{ env.ECR_REPO_URL }}
+          docker compose -f compose.yml build
+
+          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin $ecr_repo_url
+
+          docker images
+
+          REPO_URI="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com"
+
+          REPO_NAME=$(echo "${{ github.repository }}" | awk -F/ '{print $2}' | tr '[:upper:]' '[:lower:]')
+
+          IMAGES=("app" "web" "auth" "migrator")  
+
+          for IMAGE in "${IMAGES[@]}"; do
+            aws ecr create-repository --repository-name $REPO_NAME-$IMAGE --region ${{ secrets.AWS_REGION }}
+            IMAGE_NAME="$REPO_URI/$REPO_NAME-$IMAGE:${{ github.sha }}"
+            docker tag $REPO_NAME-$IMAGE $IMAGE_NAME
+            docker push $IMAGE_NAME
+          done
+
+      - name: Provision underlying infrastructure for ECS Cluster
+        run: |
+          cd infrastructure/ecs-cluster
+          terraform apply -auto-approve 
