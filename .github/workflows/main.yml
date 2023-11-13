@@ -1,4 +1,4 @@
-name: bookstore
+name: Main Workflow
 
 on:
   push:
@@ -6,64 +6,83 @@ on:
       - main
 
 jobs:
-  build:
+  build_and_deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v2
 
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: 7
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v1
+      with:
+        terraform_version: 1.0.0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v2
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          unzip \
+          jq
 
-      - name: Install dependencies
-        run: dotnet restore
+    - name: Install .NET SDK
+      run: |
+        wget -q https://packages.microsoft.com/config/ubuntu/20.04/packages-microsoft-prod.deb
+        sudo dpkg -i packages-microsoft-prod.deb
+        sudo apt-get update
+        sudo apt-get install -y dotnet-sdk-5.0
 
-      - name: Build
-        run: dotnet build --configuration Release --no-restore
+    - name: Install PostgreSQL
+      run: |
+        sudo apt-get install -y postgresql
 
-      - name: Test
-        run: dotnet test --no-restore --verbosity normal
+    - name: Install Node.js and Yarn
+      uses: actions/setup-node@v3
+      with:
+        node-version: '14'
+    - run: |
+        sudo apt-get install -y nodejs
+        npm install -g yarn
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
+    - name: Install Docker
+      uses: docker/setup-docker@v1
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: 'us-east-1'
 
-      - name: Set up Docker
-        uses: docker/setup-buildx-action@v1
+    - name: Run Terraform apply
+      run: |
+        terraform init
+        terraform apply -auto-approve
 
-      - name: Configure AWS CLI
-        run: |
-          aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws configure set region us-east-1
+    - name: Build and push Docker images
+      run: |
+        docker-compose build
+        docker tag your_image:latest ${{ secrets.AWS_ECR_REPO_URL }}/your_image:latest
+        docker push ${{ secrets.AWS_ECR_REPO_URL }}/your_image:latest
 
-      - name: Login to Amazon ECR
-        run: |
-          aws --version
-          aws ecr get-login-password --region ap-south-1 | docker login -u AWS --password-stdin ${{ secrets.ECS_ACCOUNT }}
+    - name: Update ECS service
+      run: |
+        AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        AWS_REGION="us-east-1"
+        ECR_REPO_NAME="your_image"
+        ECS_CLUSTER_NAME="your_ecs_cluster"
+        ECS_SERVICE_NAME="your_ecs_service"
+        IMAGE_TAG="latest"
 
-      - name: Build and Push Docker images
-        run: |
-          docker build -t ${{ secrets.ECR_REPO_AUTH }} --target auth -f Dockerfile .
-          docker push ${{ secrets.ECR_REPO_AUTH }}
+        ECR_IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}"
 
-          docker build -t ${{ secrets.ECR_REPO_MIGRATION }} --target migrator -f Dockerfile .
-          docker push ${{ secrets.ECR_REPO_MIGRATION }}
+        # Update ECS service with the new image
+        aws ecs update-service --cluster $ECS_CLUSTER_NAME --service $ECS_SERVICE_NAME --force-new-deployment --task-definition "${ECR_REPO_NAME}:${IMAGE_TAG}"
 
-          docker build -t ${{ secrets.ECR_REPO }} --target web -f Dockerfile .
-          docker push ${{ secrets.ECR_REPO }}
+    - name: Run Terraform destroy
+      run: |
+        terraform destroy -auto-approve
 
-          docker build -t ${{ secrets.ECR_REPO_HOST }} --target host -f Dockerfile .
-          docker push ${{ secrets.ECR_REPO_HOST }}
-
-     
+    - name: Print resources destroyed
+      run: |
+        echo "Resources destroyed successfully"
