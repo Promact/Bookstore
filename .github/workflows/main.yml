@@ -1,0 +1,69 @@
+name: bookstore
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: 7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v2
+
+      - name: Install dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test --no-restore --verbosity normal
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v1
+
+      - name: Configure AWS CLI
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws configure set region us-east-1
+
+      - name: Login to Amazon ECR
+        run: |
+          aws --version
+          aws ecr get-login-password --region ap-south-1 | docker login -u AWS --password-stdin ${{ secrets.ECS_ACCOUNT }}
+
+      - name: Build and Push Docker images
+        run: |
+          docker build -t ${{ secrets.ECR_REPO_AUTH }} --target auth -f Dockerfile .
+          docker push ${{ secrets.ECR_REPO_AUTH }}
+
+          docker build -t ${{ secrets.ECR_REPO_MIGRATION }} --target migrator -f Dockerfile .
+          docker push ${{ secrets.ECR_REPO_MIGRATION }}
+
+          docker build -t ${{ secrets.ECR_REPO }} --target web -f Dockerfile .
+          docker push ${{ secrets.ECR_REPO }}
+
+          docker build -t ${{ secrets.ECR_REPO_HOST }} --target host -f Dockerfile .
+          docker push ${{ secrets.ECR_REPO_HOST }}
+
+     
